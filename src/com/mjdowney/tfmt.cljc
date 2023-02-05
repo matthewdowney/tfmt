@@ -1,6 +1,5 @@
 (ns com.mjdowney.tfmt
   (:require
-    [clojure.java.io :as io]
     [rewrite-clj.node :as n]
     [rewrite-clj.zip :as z]))
 
@@ -64,7 +63,7 @@
 
 ;;; Main formatting logic
 
-(def format-recursive? #{:list :uneval :vector :set :map})
+(def format-recursive? #{:list :uneval :vector :set :map :reader-macro})
 (defn alignment [zloc]
   (if (= (z/tag zloc) :list)
     (+ (col zloc) 2)
@@ -90,19 +89,26 @@
                  zloc)]
       (recur (?navigate zloc z/right*)))))
 
+
+;;; Examples / tests
+
+;; TODO: Add linting capabilities, so you can fmt* to get {:zloc _, :errors #{}}
+;; TODO: Add a README showing how to run against a file / project
 ^:rct/test
 (comment
-  (def zloc
-    (z/of-string
-      "                (when something
-               (if-let [something-else
-                                        #_(foo) bar]
-               (println x)
-                                               ; where does this go?
-     body))"
-      {:track-position? true}))
+  (defn fmts [s] ; Helper function to test formatting a string
+    (let [s (-> (z/of-string s {:track-position? true}) fmt z/root-string)]
+      (println s)
+      (clojure.string/split-lines s)))
 
-  (-> zloc (align 1) fmt-inner z/root-string clojure.string/split-lines)
+  ; Simple nested form
+  (fmts
+    "                (when something
+             (if-let [something-else
+                                      #_(foo) bar]
+             (println x)
+                                             ; where does this go?
+   body))")
   ;=>>
   ["(when something"
    "  (if-let [something-else"
@@ -111,7 +117,11 @@
    "    ; where does this go?"
    "    body))"]
 
-  (-> zloc (align 1) fmt-inner z/root-string println))
-
-;; TODO: Non-list indentation from first form, e.g. #io.foo.bar{:foo ...
-;; TODO: Weird cases with trailing ) and uneval
+  ; Form with a reader macro
+  (fmts "(do\n(println :foo\n#com.mjdowney.something{:k :v\n:k1 :v1}))")
+  ;=>
+  ["(do"
+   "  (println :foo"
+   "    #com.mjdowney.something{:k :v"
+   "                            :k1 :v1}))"]
+  )
