@@ -65,10 +65,10 @@
 
 (def format-recursive? #{:list :uneval :vector :set :map :reader-macro})
 (defn alignment [zloc]
-  (if (= (z/tag zloc) :list)
-    (+ (col zloc) 2)
-    (some-> (first-child zloc (complement z/whitespace-or-comment?))
-      col)))
+  (let [first-child (first-child zloc (complement z/whitespace-or-comment?))]
+    (if (and (= (z/tag zloc) :list) (= (z/tag first-child) :token))
+      (+ (col zloc) 2)
+      (col first-child))))
 
 (defn fmt-inner [zloc]
   (if-not (format-recursive? (z/tag zloc))
@@ -88,7 +88,6 @@
                  (-> (align zloc 1) fmt-inner) ; no indent for top-level forms
                  zloc)]
       (recur (?navigate zloc z/right*)))))
-
 
 ;;; Examples / tests
 
@@ -116,6 +115,20 @@
    "    (println x)"
    "    ; where does this go?"
    "    body))"]
+
+  ; Multi-arity form
+  (fmts
+    "(defn multi
+     ([x]
+     (+ x 1))
+     ([x y]
+      (+ x y)))")
+  ;=>>
+  ["(defn multi"
+   "  ([x]"
+   "   (+ x 1))"
+   "  ([x y]"
+   "   (+ x y)))"]
 
   ; Form with a reader macro
   (fmts "(do\n(println :foo\n#com.mjdowney.something{:k :v\n:k1 :v1}))")
