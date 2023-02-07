@@ -111,6 +111,7 @@
            (recur (?navigate zloc z/right*)))))
      *indented*]))
 
+#_{:clj-kondo/ignore [:unused-binding]}
 (defn lint*
   "Like `lint`, but returns data instead of printing."
   [{:keys [root pred regex] :as opts}]
@@ -144,28 +145,28 @@
   ;=> [[1 2 3] [5 6 7] [9] [11] [15] [17 18 19]])
   )
 
+#_{:clj-kondo/ignore [:unused-binding]}
 (defn lint
-  ""
+  "Lint the files under :root, printing warnings for each indentation violation.
+
+  Instead of a supplying a :pred, you can also supply a :regex. If neither are
+  present then all .clj(c/s) files are matched.
+
+  :root can be a file, a directory, or a collection of the same.
+
+  :exclude has the same shape, and marks files or directories to skip."
   [{:keys [root pred regex] :as opts}]
   (run!
     (fn [{:keys [file problems]}]
       (doseq [lines (group-contiguous problems)]
-        (println (fs/path file) "at:"
-          (if (second lines)
-            (str (first lines) "-" (peek lines))
-            (first lines)))))
+        (println
+          (str (fs/path file) ":"
+            (if (second lines)
+              (str (first lines) "-" (peek lines))
+              (first lines))
+            ":")
+          "bad indentation")))
     (lint* opts)))
-
-(comment
-  (lint {:root "/home/matthew" :exclude ["/home/matthew/the-system"]})
-
-  (def zloc
-    (z/of-file "/home/matthew/blink/test/io/sixtant/blink/message_process_test.clj"
-      {:track-position? true}))
-
-  (fmt* zloc)
-
-  )
 
 ;;; Examples / tests
 
