@@ -1,34 +1,50 @@
 (ns com.mjdowney.tfmt
   (:require
+    [com.mjdowney.tfmt.fs :as fs]
     [rewrite-clj.node :as n]
     [rewrite-clj.zip :as z]))
 
 ;;; rewrite-clj helpers
 
-; try to advance z with f, otherwise return {:end z} - eases backtracking
-(defn ?navigate [z f] (let [z' (f z)] (if (z/end? z') {:end z} z')))
-(def blank (n/whitespace-node ""))
+(def ^:dynamic *indented* "set of reindented line numbers" #{})
+
 (defn trimmable? [x] (and (z/whitespace? x) (pos? (z/length x))))
 (defn row [zloc] (first (z/position zloc)))
 (defn col [zloc] (second (z/position zloc)))
+(def blank (n/whitespace-node ""))
 
-(defn ?triml [zloc r] ; trim whitespace to the left, or nil if no whitespace
+(defn ?navigate
+  "Try to advance z with f, otherwise return {:end z} - eases backtracking."
+  [z f]
+  (let [z' (f z)]
+    (if (z/end? z')
+      {:end z}
+      z')))
+
+(defn ?triml
+  "Trim whitespace to the left, or nil if no whitespace."
+  [zloc r]
   (when-let [whitespace (z/find-next zloc z/left*
                           (every-pred #(= (row %) r) trimmable?))]
     (-> whitespace (z/replace blank) z/right*)))
 
-(defn align [zloc col] ; make the node start at the given col if possible
-  (println "aligning:" (some-> zloc z/node))
+(defn align
+  "Make the node start at the given col if possible."
+  [zloc col]
   (let [[r c] (z/position zloc)]
     (cond
       (= c col) zloc
       (> c col) (if-let [zloc' (?triml zloc r)] (recur zloc' col) zloc)
-      :else     (z/insert-space-left zloc (- col c)))))
+      :else     (do
+                  (set! *indented* (conj *indented* r))
+                  (z/insert-space-left zloc (- col c))))))
 
-(defn first-child [zloc pred] ; first direct child satisfying `pred`
+(defn first-child
+  "First direct child satisfying `pred`."
+  [zloc pred]
   (let [child (-> zloc z/down*)]
     (if-not (pred child)
-      (z/find-next zloc z/right* pred)
+      (z/find-next child z/right* pred)
       child)))
 
 (defn map-children
@@ -68,7 +84,7 @@
   (let [first-child (first-child zloc (complement z/whitespace-or-comment?))]
     (if (and (= (z/tag zloc) :list) (= (z/tag first-child) :token))
       (+ (col zloc) 2)
-      (col first-child))))
+      (some-> first-child col))))
 
 (defn fmt-inner [zloc]
   (if-not (format-recursive? (z/tag zloc))
@@ -81,23 +97,89 @@
             true           fmt-inner))
         zloc))))
 
-(defn fmt [zloc]
-  (if-let [end (:end zloc)]
-    (z/up end)
-    (let [zloc (if-not (z/whitespace? zloc)
-                 (-> (align zloc 1) fmt-inner) ; no indent for top-level forms
-                 zloc)]
-      (recur (?navigate zloc z/right*)))))
+(defn fmt*
+  "Format the given zloc, returning a new zloc and a set of line numbers that
+  were reformatted."
+  [zloc]
+  (binding [*indented* (sorted-set)]
+    [(loop [zloc zloc]
+       (if-let [end (:end zloc)]
+         (z/up end)
+         (let [zloc (if-not (z/whitespace? zloc)
+                      (-> (align zloc 1) fmt-inner) ; no top-level indentation
+                      zloc)]
+           (recur (?navigate zloc z/right*)))))
+     *indented*]))
+
+(defn lint*
+  "Like `lint`, but returns data instead of printing."
+  [{:keys [root pred regex] :as opts}]
+  (filter some?
+    (fs/pmap*
+      (fn [f]
+        (try
+          {:file f
+           :problems (second (fmt* (z/of-file f {:track-position? true})))}
+          (catch Exception _
+            (locking *out* (println "Error linting" (fs/path f)))
+            nil)))
+      opts)))
+
+(defn group-contiguous
+  "Partition `nums` into chunks of contiguous runs."
+  [nums]
+  (reduce
+    (fn [xs n]
+      (let [chunk (peek xs)
+            prv (peek chunk)]
+        (if (and prv (= n (inc prv)))
+          (assoc xs (dec (count xs)) (conj chunk n))
+          (conj xs [n]))))
+    []
+    nums))
+
+^:rct/test
+(comment
+  (group-contiguous [1 2 3 5 6 7 9 11 15 17 18 19])
+  ;=> [[1 2 3] [5 6 7] [9] [11] [15] [17 18 19]])
+  )
+
+(defn lint
+  ""
+  [{:keys [root pred regex] :as opts}]
+  (run!
+    (fn [{:keys [file problems]}]
+      (doseq [lines (group-contiguous problems)]
+        (println (fs/path file) "at:"
+          (if (second lines)
+            (str (first lines) "-" (peek lines))
+            (first lines)))))
+    (lint* opts)))
+
+(comment
+  (lint {:root "/home/matthew" :exclude ["/home/matthew/the-system"]})
+
+  (def zloc
+    (z/of-file "/home/matthew/blink/test/io/sixtant/blink/message_process_test.clj"
+      {:track-position? true}))
+
+  (fmt* zloc)
+
+  )
 
 ;;; Examples / tests
 
-;; TODO: Add linting capabilities, so you can fmt* to get {:zloc _, :errors #{}}
 ;; TODO: Add a README showing how to run against a file / project
+;; TODO: Add a test runner
 ^:rct/test
 (comment
   (defn fmts [s] ; Helper function to test formatting a string
-    (let [s (-> (z/of-string s {:track-position? true}) fmt z/root-string)]
-      (println s)
+    (let [s (-> s
+              (z/of-string {:track-position? true})
+              fmt*
+              first
+              z/root-string)]
+      (println s "\n")
       (clojure.string/split-lines s)))
 
   ; Simple nested form
@@ -137,4 +219,24 @@
    "  (println :foo"
    "    #com.mjdowney.something{:k :v"
    "                            :k1 :v1}))"]
+
+  ; Empty forms
+  (fmts " ()
+          []
+          {}")
+  ;=>>
+  ["()"
+   "[]"
+   "{}"]
+
+  ; First element is a comment
+  (fmts
+    "{; some comment
+ :foo :bar
+            :baz :qux}")
+  ;=>>
+  ["{; some comment"
+   " :foo :bar"
+   " :baz :qux}"]
+
   )
