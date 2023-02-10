@@ -196,26 +196,38 @@
   ;=> [[1 2 3] [5 6 7] [9] [11] [15] [17 18 19]])
   )
 
+(defn -print-lint-results [{:keys [file problems]}]
+  (doseq [lines (group-contiguous problems)]
+    (let [p (if (file? file) (path file) (str file))]
+      (println
+        (str p ":"
+          (if (second lines)
+            (str (first lines) "-" (peek lines))
+            (first lines))
+          ":")
+        "bad indentation"))))
+
 (defn lint
-  "Lint the files under :root, print warnings for each indentation violation."
+  "Lint the files under :root, print warnings for each indentation violation.
+
+  If no opts are provided, lints the string from stdin."
   [opts]
-  (run!
-    (fn [{:keys [file problems]}]
-      (doseq [lines (group-contiguous problems)]
-        (let [p (if (file? file) (path file) (str ^java.net.URL file))]
-          (println
-            (str p ":"
-              (if (second lines)
-                (str (first lines) "-" (peek lines))
-                (first lines))
-              ":")
-            "bad indentation"))))
-    (lint* opts)))
+  (if (:stdin opts)
+    (let [zloc (z/of-string (slurp *in*) {:track-position? true})]
+      (-print-lint-results {:problems (second (fmt* zloc)) :file "stdin"}))
+    (run! -print-lint-results (lint* opts))))
 
 (defn fmt
-  "Reformat the Clojure source at the given file or URL and print to stdout."
-  [file-or-url]
-  (-> (-fmt file-or-url) first z/root-string println))
+  "Reformat the Clojure source at the :root file or URL and print to stdout.
+
+  If :stdin is true, reads from stdin instead."
+  [opts]
+  (if (:stdin opts)
+    (let [zl (z/of-string (slurp *in*) {:track-position? true})]
+      (-> (fmt* zl) first z/root-string println))
+    (let [r (:root opts)]
+      (doseq [f (if (coll? r) r [r])]
+        (-> (-fmt f) first z/root-string println)))))
 
 (comment
   ;; E.g. lint this project
@@ -226,7 +238,7 @@
   (lint {:root url})
 
   ;; E.g. reformat and print
-  (fmt url))
+  (fmt {:root url}))
 
 ;;; Examples / tests
 

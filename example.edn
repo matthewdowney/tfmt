@@ -1,0 +1,10 @@
+  (when something
+             (if-let [something-else
+                                      #_(foo) bar]
+             (println x)
+
+                                             ; where does this go?
+   (println 
+:foo
+           #com.mjdowney.something{:k :v
+                             :k1 :v1})))
