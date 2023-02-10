@@ -1,6 +1,10 @@
 (ns com.mjdowney.tfmt
+  "Babashka script to lint / format code according to Tonsky formatting[1].
+
+  [1] https://tonsky.me/blog/clojurefmt/"
+  {:org.babashka/cli {:coerce {:root [:string] :exclude [:string]}}}
   (:require
-    [com.mjdowney.tfmt.fs :as fs]
+    [clojure.java.io :as io]
     [rewrite-clj.node :as n]
     [rewrite-clj.zip :as z]))
 
@@ -111,20 +115,67 @@
            (recur (?navigate zloc z/right*)))))
      *indented*]))
 
-#_{:clj-kondo/ignore [:unused-binding]}
+;;; File helpers
+
+(defn cpath [^java.io.File f] (.getCanonicalPath f))
+(defn path  [^java.io.File f] (.getPath f))
+(defn dir?  [^java.io.File f] (.isDirectory f))
+(defn ls    [^java.io.File f] (.listFiles f))
+(defn file? [f] (instance? java.io.File f))
+(defn url?  [f] (instance? java.net.URL f))
+
+(defn pkeep
+  "Map the function `f` in parallel over all files under :root, with `keep`
+  semantics.
+
+  Options:
+    :root - A file, directory, or collection of the same.
+    :exclude - A collection of files or directories to exclude from the search.
+    :regex - A regex to match files against. Defaults to .+\\.(clj|cljs|cljc).
+    :pred - A predicate to match files against. Defaults to the :regex."
+  [f {:keys [root exclude pred regex] :or {regex #".+\.(clj|cljs|cljc)"}}]
+  (let [root (if (coll? root) root [root])
+
+        exclude (into #{} (map (comp cpath io/file)) exclude)
+        search-recursive? (fn [f]
+                            (and
+                              (not (url? f))
+                              (dir? f)
+                              (not (exclude (cpath f)))))
+
+        pred (or pred
+               #(or
+                  (url? %)
+                  (and (not (dir? %)) (re-matches regex (path %)))))
+        pred (fn [f]
+               (and (pred f)
+                 (or (url? f) (not (exclude (cpath f))))))]
+    (->> root
+         (mapcat #(tree-seq search-recursive? ls (if (string? %) (io/file %) %)))
+         (filter pred)
+         (pmap f)
+         (filter some?))))
+
+;;; Main API
+
+(defn -fmt [file-or-url]
+  (fmt*
+    (if (url? file-or-url)
+      (z/of-string (slurp file-or-url) {:track-position? true})
+      (z/of-file file-or-url {:track-position? true}))))
+
 (defn lint*
   "Like `lint`, but returns data instead of printing."
-  [{:keys [root pred regex] :as opts}]
-  (filter some?
-    (fs/pmap*
-      (fn [f]
-        (try
-          {:file f
-           :problems (second (fmt* (z/of-file f {:track-position? true})))}
-          (catch Exception _
-            (locking *out* (println "Error linting" (fs/path f)))
-            nil)))
-      opts)))
+  [opts]
+  (pkeep
+    (fn [f]
+      (try
+        {:file (if (url? f) (.getPath f) (path f))
+         :problems (second (-fmt f))}
+        (catch Exception _
+          (locking *out* (println "Error linting" (path f)))
+          nil)))
+    opts))
 
 (defn group-contiguous
   "Partition `nums` into chunks of contiguous runs."
@@ -145,43 +196,47 @@
   ;=> [[1 2 3] [5 6 7] [9] [11] [15] [17 18 19]])
   )
 
-#_{:clj-kondo/ignore [:unused-binding]}
 (defn lint
-  "Lint the files under :root, printing warnings for each indentation violation.
-
-  Instead of a supplying a :pred, you can also supply a :regex. If neither are
-  present then all .clj(c/s) files are matched.
-
-  :root can be a file, a directory, or a collection of the same.
-
-  :exclude has the same shape, and marks files or directories to skip."
-  [{:keys [root pred regex] :as opts}]
+  "Lint the files under :root, print warnings for each indentation violation."
+  [opts]
   (run!
     (fn [{:keys [file problems]}]
       (doseq [lines (group-contiguous problems)]
-        (println
-          (str (fs/path file) ":"
-            (if (second lines)
-              (str (first lines) "-" (peek lines))
-              (first lines))
-            ":")
-          "bad indentation")))
+        (let [p (if (file? file) (path file) (str ^java.net.URL file))]
+          (println
+            (str p ":"
+              (if (second lines)
+                (str (first lines) "-" (peek lines))
+                (first lines))
+              ":")
+            "bad indentation"))))
     (lint* opts)))
+
+(defn fmt
+  "Reformat the Clojure source at the given file or URL and print to stdout."
+  [file-or-url]
+  (-> (-fmt file-or-url) first z/root-string println))
+
+(comment
+  ;; E.g. lint this project
+  (lint {:root ["src/"]})
+
+  ;; Or something from github
+  (def url (io/as-url "https://raw.githubusercontent.com/matthewdowney/rich-comment-tests/main/src/com/mjdowney/rich_comment_tests.clj"))
+  (lint {:root url})
+
+  ;; E.g. reformat and print
+  (fmt url))
 
 ;;; Examples / tests
 
-;; TODO: Add a README showing how to run against a file / project
-;; TODO: Add a test runner
 ^:rct/test
 (comment
+  (require '[clojure.string :as string])
   (defn fmts [s] ; Helper function to test formatting a string
-    (let [s (-> s
-              (z/of-string {:track-position? true})
-              fmt*
-              first
-              z/root-string)]
+    (let [s (-> s (z/of-string {:track-position? true}) fmt* first z/root-string)]
       (println s "\n")
-      (clojure.string/split-lines s)))
+      (string/split-lines s)))
 
   ; Simple nested form
   (fmts
@@ -239,5 +294,4 @@
   ["{; some comment"
    " :foo :bar"
    " :baz :qux}"]
-
   )
